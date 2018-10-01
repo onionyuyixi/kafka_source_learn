@@ -19,19 +19,17 @@ package kafka.network
 
 import java.io.IOException
 import java.net._
-import java.nio.channels._
-import java.nio.channels.{Selector => NSelector}
+import java.nio.channels.{Selector => NSelector, _}
 import java.util.concurrent._
 import java.util.concurrent.atomic._
 
 import com.yammer.metrics.core.Gauge
 import kafka.cluster.{BrokerEndPoint, EndPoint}
 import kafka.metrics.KafkaMetricsGroup
-import kafka.network.RequestChannel.{CloseConnectionResponse, EndThrottlingResponse, NoOpResponse, SendResponse, StartThrottlingResponse}
+import kafka.network.RequestChannel.{Metrics => _, _}
 import kafka.security.CredentialProvider
 import kafka.server.KafkaConfig
 import kafka.utils._
-import org.apache.kafka.common.{KafkaException, Reconfigurable}
 import org.apache.kafka.common.memory.{MemoryPool, SimpleMemoryPool}
 import org.apache.kafka.common.metrics._
 import org.apache.kafka.common.metrics.stats.Meter
@@ -40,10 +38,11 @@ import org.apache.kafka.common.network.{ChannelBuilder, ChannelBuilders, KafkaCh
 import org.apache.kafka.common.requests.{RequestContext, RequestHeader}
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.utils.{KafkaThread, LogContext, Time}
+import org.apache.kafka.common.{KafkaException, Reconfigurable}
 import org.slf4j.event.Level
 
+import scala.collection.JavaConverters._
 import scala.collection._
-import JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, Buffer}
 import scala.util.control.ControlThrowable
 
@@ -53,6 +52,18 @@ import scala.util.control.ControlThrowable
  *   Acceptor has N Processor threads that each have their own selector and read requests from sockets
  *   M Handler threads that handle requests and produce responses back to the processor threads for writing.
  */
+/**
+  * 采用了nio网络编程
+  * 线程模型是 ------> 一个acceptor 用于处理所有新的连接
+  * acceptor有n个Processor线程 --->每一个线程 都有自己的选择器 通过选择器可以从sockets中读取该线程的请求request
+  * M 个Handler线程 ---》用来处理requests并产生request的响应response 返回给响应的processor线程
+  * 这个可以参考netty的channelhandler
+  * 一个processor相当于一个 channel
+  */
+/**
+  * 又案 Acceptor与processor是同源的  都是继承了AbstractServerThread
+  *
+  */
 class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time, val credentialProvider: CredentialProvider) extends Logging with KafkaMetricsGroup {
 
   private val maxQueuedRequests = config.queuedMaxRequests
@@ -88,6 +99,12 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
    *
    * @param startupProcessors Flag indicating whether `Processor`s must be started.
    */
+  /**
+    *该方法用于开启一个socket Server 所有listener的acceptor都要开启
+    * startupProcessors= true 表示processors都有已经开启
+    * startupProcessors= false processors需要等待SocketServer调用startProcessors()
+    * 这种延迟处理是需要等待所有server初始化成功
+    */
   def startup(startupProcessors: Boolean = true) {
     this.synchronized {
       connectionQuotas = new ConnectionQuotas(maxConnectionsPerIp, maxConnectionsPerIpOverrides)
@@ -129,12 +146,13 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
    * was invoked with `startupProcessors=false`.
    */
   def startProcessors(): Unit = synchronized {
-    acceptors.values.asScala.foreach { _.startProcessors() }
+    acceptors.values.asScala.foreach { _.startProcessors() } //让任何一个acceptor下的processor启动成功
     info(s"Started processors for ${acceptors.size} acceptors")
   }
 
   private def endpoints = config.listeners.map(l => l.listenerName -> l).toMap
 
+  //丛配置中创造Accrptors 与 Proccessors
   private def createAcceptorAndProcessors(processorsPerListener: Int,
                                           endpoints: Seq[EndPoint]): Unit = synchronized {
 
@@ -262,6 +280,7 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
  */
 private[kafka] abstract class AbstractServerThread(connectionQuotas: ConnectionQuotas) extends Runnable with Logging {
 
+  //这里startupLatch 与 shutdownLatch 互斥
   private val startupLatch = new CountDownLatch(1)
 
   // `shutdown()` is invoked before `startupComplete` and `shutdownComplete` if an exception is thrown in the constructor
@@ -279,7 +298,7 @@ private[kafka] abstract class AbstractServerThread(connectionQuotas: ConnectionQ
   def shutdown(): Unit = {
     if (alive.getAndSet(false))
       wakeup()
-    shutdownLatch.await()
+    shutdownLatch.await()  //shutdown 一直等待shutdownComplete()的完成
   }
 
   /**
@@ -322,7 +341,7 @@ private[kafka] abstract class AbstractServerThread(connectionQuotas: ConnectionQ
 /**
  * Thread that accepts and configures new connections. There is one of these per endpoint.
  */
-private[kafka] class Acceptor(val endPoint: EndPoint,
+private[kafka] class Acceptor(val endPoint: EndPoint, //连接地址
                               val sendBufferSize: Int,
                               val recvBufferSize: Int,
                               brokerId: Int,
@@ -345,6 +364,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
     }
   }
 
+  // 开启进程 需要同步机制 不能错乱
   private def startProcessors(processors: Seq[Processor]): Unit = synchronized {
     processors.foreach { processor =>
       KafkaThread.nonDaemon(s"kafka-network-thread-$brokerId-${endPoint.listenerName}-${endPoint.securityProtocol}-${processor.id}",
@@ -372,7 +392,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
   /**
    * Accept loop that checks for new connection attempts
    */
-  def run() {
+  def run() {  //Acceptor通过监听 获取新连接内容
     serverChannel.register(nioSelector, SelectionKey.OP_ACCEPT)
     startupComplete()
     try {
@@ -389,7 +409,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
                 iter.remove()
                 if (key.isAcceptable) {
                   val processor = synchronized {
-                    currentProcessor = currentProcessor % processors.size
+                    currentProcessor = currentProcessor % processors.size  //取余数 求均衡
                     processors(currentProcessor)
                   }
                   accept(key, processor)
@@ -463,7 +483,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
                   socketChannel.socket.getSendBufferSize, sendBufferSize,
                   socketChannel.socket.getReceiveBufferSize, recvBufferSize))
 
-      processor.accept(socketChannel)
+      processor.accept(socketChannel) //  完成了acceptor将socketChannel 转交给processor的目的
     } catch {
       case e: TooManyConnectionsException =>
         info("Rejected connection from %s, address already has the configured maximum of %d connections.".format(e.ip, e.count))
@@ -492,7 +512,7 @@ private[kafka] object Processor {
 private[kafka] class Processor(val id: Int,
                                time: Time,
                                maxRequestSize: Int,
-                               requestChannel: RequestChannel,
+                               requestChannel: RequestChannel,  // 一个Processor 构造中含有一个RequestChannel
                                connectionQuotas: ConnectionQuotas,
                                connectionsMaxIdleMs: Long,
                                listenerName: ListenerName,
@@ -539,6 +559,7 @@ private[kafka] class Processor(val id: Int,
     Map(NetworkProcessorMetricTag -> id.toString)
   )
 
+  //获取selector
   private val selector = createSelector(
     ChannelBuilders.serverChannelBuilder(listenerName,
       listenerName == config.interBrokerListenerName,
@@ -790,7 +811,7 @@ private[kafka] class Processor(val id: Int,
       val channel = newConnections.poll()
       try {
         debug(s"Processor $id listening to new connection from ${channel.socket.getRemoteSocketAddress}")
-        selector.register(connectionId(channel.socket), channel)
+        selector.register(connectionId(channel.socket), channel)  //通过轮询  不断地将channel 注册到 selector中
       } catch {
         // We explicitly catch all exceptions and close the socket to avoid a socket leak.
         case e: Throwable =>
@@ -876,6 +897,8 @@ private[kafka] class Processor(val id: Int,
 
 }
 
+
+//连接限制  分配  形成在（0--》max）个连接
 class ConnectionQuotas(val defaultMax: Int, overrideQuotas: Map[String, Int]) {
 
   private val overrides = overrideQuotas.map { case (host, count) => (InetAddress.getByName(host), count) }
