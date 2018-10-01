@@ -70,7 +70,7 @@ public class KafkaChannel {
     public enum ChannelMuteEvent {
         REQUEST_RECEIVED,
         RESPONSE_SENT,
-        THROTTLE_STARTED,
+        THROTTLE_STARTED,//限流
         THROTTLE_ENDED
     };
 

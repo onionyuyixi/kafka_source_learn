@@ -17,13 +17,13 @@
 
 package kafka.server
 
-import kafka.network._
-import kafka.utils._
-import kafka.metrics.KafkaMetricsGroup
-import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import com.yammer.metrics.core.Meter
+import kafka.metrics.KafkaMetricsGroup
+import kafka.network._
+import kafka.utils._
 import org.apache.kafka.common.internals.FatalExitError
 import org.apache.kafka.common.utils.{KafkaThread, Time}
 
@@ -51,7 +51,7 @@ class KafkaRequestHandler(id: Int,
       // time should be discounted by # threads.
       val startSelectTime = time.nanoseconds
 
-      val req = requestChannel.receiveRequest(300)
+      val req = requestChannel.receiveRequest(300)  //从队列中回去请求
       val endTime = time.nanoseconds
       val idleTime = endTime - startSelectTime
       aggregateIdleMeter.mark(idleTime / totalHandlerThreads.get)
@@ -66,7 +66,7 @@ class KafkaRequestHandler(id: Int,
           try {
             request.requestDequeueTimeNanos = endTime
             trace(s"Kafka request handler $id on broker $brokerId handling request $request")
-            apis.handle(request)
+            apis.handle(request)  //apis 去执行逻辑
           } catch {
             case e: FatalExitError =>
               shutdownComplete.countDown()
@@ -94,7 +94,7 @@ class KafkaRequestHandler(id: Int,
 
 class KafkaRequestHandlerPool(val brokerId: Int,
                               val requestChannel: RequestChannel,
-                              val apis: KafkaApis,
+                              val apis: KafkaApis,   //真正的业务逻辑处理者
                               time: Time,
                               numThreads: Int) extends Logging with KafkaMetricsGroup {
 
@@ -108,7 +108,7 @@ class KafkaRequestHandlerPool(val brokerId: Int,
     createHandler(i)
   }
 
-  def createHandler(id: Int): Unit = synchronized {
+  def createHandler(id: Int): Unit = synchronized { //构件新的handler  handler在放入数组中 开启线程  去寻找响应的channel 触发api的动作
     runnables += new KafkaRequestHandler(id, brokerId, aggregateIdleMeter, threadPoolSize, requestChannel, apis, time)
     KafkaThread.daemon("kafka-request-handler-" + id, runnables(id)).start()
   }

@@ -666,7 +666,7 @@ private[kafka] class Processor(val id: Int,
             // Try unmuting the channel. The channel will be unmuted only if the response has already been sent out to
             // the client.
             handleChannelMuteEvent(channelId, ChannelMuteEvent.THROTTLE_ENDED)
-            tryUnmuteChannel(channelId)
+            tryUnmuteChannel(channelId)  //标记着该channel的工作结束 从set集合中移除
           case _ =>
             throw new IllegalArgumentException(s"Unknown response type: ${currentResponse.getClass}")
         }
@@ -715,10 +715,16 @@ private[kafka] class Processor(val id: Int,
             val context = new RequestContext(header, connectionId, channel.socketAddress,
               channel.principal, listenerName, securityProtocol)
             val req = new RequestChannel.Request(processor = id, context = context,
-              startTimeNanos = time.nanoseconds, memoryPool, receive.payload, requestChannel.metrics)
-            requestChannel.sendRequest(req)
-            selector.mute(connectionId)
-            handleChannelMuteEvent(connectionId, ChannelMuteEvent.REQUEST_RECEIVED)
+              startTimeNanos = time.nanoseconds, memoryPool, receive.payload, requestChannel.metrics)  //new 一个request
+           /** Send a request to be handled, potentially blocking until there is room in the queue for the request
+            def sendRequest(request: RequestChannel.Request) {
+             requestQueue.put(request)
+           }
+            */
+            //实际上是放入到requestQueue (有序队列)
+            requestChannel.sendRequest(req) //channel  发送request
+            selector.mute(connectionId)//
+            handleChannelMuteEvent(connectionId, ChannelMuteEvent.REQUEST_RECEIVED)  //修改该request的mute状态值
           case None =>
             // This should never happen since completed receives are processed immediately after `poll()`
             throw new IllegalStateException(s"Channel ${receive.source} removed from selector before processing completed receive")
@@ -747,7 +753,7 @@ private[kafka] class Processor(val id: Int,
         // it will be unmuted immediately. If the channel has been throttled, it will unmuted only if the throttling
         // delay has already passed by now.
         handleChannelMuteEvent(send.destination, ChannelMuteEvent.RESPONSE_SENT)
-        tryUnmuteChannel(send.destination)
+        tryUnmuteChannel(send.destination) // 实际上移除当前channel （这里是不是池的概念）
       } catch {
         case e: Throwable => processChannelException(send.destination,
           s"Exception while processing completed send to ${send.destination}", e)
