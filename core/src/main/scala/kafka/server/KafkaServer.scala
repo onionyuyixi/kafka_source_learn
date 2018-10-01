@@ -113,43 +113,44 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
 
   var metrics: Metrics = null
 
+  // @volatile var currentState: Byte = NotRunning.state  broker的瞬态当前状态
   val brokerState: BrokerState = new BrokerState
 
-  var apis: KafkaApis = null
+  var apis: KafkaApis = null  //处理所有向kafka的请求request
   var authorizer: Option[Authorizer] = None
-  var socketServer: SocketServer = null
-  var requestHandlerPool: KafkaRequestHandlerPool = null
+  var socketServer: SocketServer = null   //网络处理 socket
+  var requestHandlerPool: KafkaRequestHandlerPool = null  //Kafka请求处理池 handlerPool
 
   var logDirFailureChannel: LogDirFailureChannel = null
-  var logManager: LogManager = null
+  var logManager: LogManager = null  //日志管理器
 
-  var replicaManager: ReplicaManager = null
-  var adminManager: AdminManager = null
-  var tokenManager: DelegationTokenManager = null
+  var replicaManager: ReplicaManager = null  //分区副本管理器
+  var adminManager: AdminManager = null  //admin管理器
+  var tokenManager: DelegationTokenManager = null  //委托token管理员
 
   var dynamicConfigHandlers: Map[String, ConfigHandler] = null
-  var dynamicConfigManager: DynamicConfigManager = null
-  var credentialProvider: CredentialProvider = null
-  var tokenCache: DelegationTokenCache = null
+  var dynamicConfigManager: DynamicConfigManager = null //动态配置管理器
+  var credentialProvider: CredentialProvider = null //认证提供器
+  var tokenCache: DelegationTokenCache = null //token缓存
 
-  var groupCoordinator: GroupCoordinator = null
+  var groupCoordinator: GroupCoordinator = null  //消费组协调器
 
-  var transactionCoordinator: TransactionCoordinator = null
+  var transactionCoordinator: TransactionCoordinator = null  //事物协调器
 
-  var kafkaController: KafkaController = null
+  var kafkaController: KafkaController = null  //kafka控制器
 
-  var kafkaScheduler: KafkaScheduler = null
+  var kafkaScheduler: KafkaScheduler = null  //kafka 日程表
 
-  var metadataCache: MetadataCache = null
-  var quotaManagers: QuotaFactory.QuotaManagers = null
+  var metadataCache: MetadataCache = null  //元数据缓存
+  var quotaManagers: QuotaFactory.QuotaManagers = null  //配额管理器
 
   private var _zkClient: KafkaZkClient = null
-  val correlationId: AtomicInteger = new AtomicInteger(0)
+  val correlationId: AtomicInteger = new AtomicInteger(0)  //关联id
   val brokerMetaPropsFile = "meta.properties"
   val brokerMetadataCheckpoints = config.logDirs.map(logDir => (logDir, new BrokerMetadataCheckpoint(new File(logDir + File.separator + brokerMetaPropsFile)))).toMap
 
   private var _clusterId: String = null
-  private var _brokerTopicStats: BrokerTopicStats = null
+  private var _brokerTopicStats: BrokerTopicStats = null  //broker 上主题的统计
 
 
   def clusterId: String = _clusterId
@@ -196,8 +197,8 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
       if (startupComplete.get)
         return
 
-      val canStartup = isStartingUp.compareAndSet(false, true)
-      if (canStartup) {
+      val canStartup = isStartingUp.compareAndSet(false, true) //CAS操作 没有锁的限制
+      if (canStartup) { //如果还没有启动
         brokerState.newState(Starting)
 
         /* setup zookeeper */
@@ -259,7 +260,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
         zkClient.registerBrokerInZk(brokerInfo)
 
         // Now that the broker id is successfully registered, checkpoint it
-        checkpointBrokerId(config.brokerId)
+        checkpointBrokerId(config.brokerId) //检查唯一的brokerId
 
         /* start token manager */
         tokenManager = new DelegationTokenManager(config, tokenCache, time , zkClient)
